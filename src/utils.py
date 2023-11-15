@@ -209,7 +209,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
 
     def imread(f):
         if f.endswith('png'):
-            return imageio.imread(f, ignoregamma=True)
+            return imageio.imread(f)
         else:
             return imageio.imread(f)
 
@@ -338,3 +338,52 @@ def load_llff_data(data_dir, model_name, obs_img_num, *kwargs, factor=8, recente
     phi, theta, psi, x, y, z = kwargs
     start_pose = rot_phi(phi/180.*np.pi) @ rot_theta(theta/180.*np.pi) @ rot_psi(psi/180.*np.pi) @ trans_t(x, y, z) @ obs_img_pose
     return obs_img, hwf, start_pose, obs_img_pose, bds
+
+def ypr_to_quaternion(yaw, pitch, roll):
+    """
+    Convert roll, pitch, and yaw angles to a quaternion.
+
+    Args:
+        roll (float): Roll angle in radians (rotation around the X-axis).
+        pitch (float): Pitch angle in radians (rotation around the Y-axis).
+        yaw (float): Yaw angle in radians (rotation around the Z-axis).
+
+    Returns:
+        numpy.ndarray: A 4-element numpy array representing the quaternion.
+    """
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+
+    q_w = cr * cp * cy + sr * sp * sy
+    q_x = sr * cp * cy - cr * sp * sy
+    q_y = cr * sp * cy + sr * cp * sy
+    q_z = cr * cp * sy - sr * sp * cy
+
+    return np.array([q_w, q_x, q_y, q_z])
+
+def quaternion_to_ypr(quaternion):
+    """
+    Convert a quaternion to roll, pitch, and yaw angles.
+
+    Args:
+        quaternion (numpy.ndarray): A 4-element numpy array representing the quaternion.
+
+    Returns:
+        tuple: A tuple (roll, pitch, yaw) containing the RPY angles in radians.
+    """
+    q_w, q_x, q_y, q_z = quaternion
+
+    # Roll (X-axis rotation)
+    roll = np.arctan2(2 * (q_w * q_x + q_y * q_z), 1 - 2 * (q_x**2 + q_y**2))
+
+    # Pitch (Y-axis rotation)
+    pitch = np.arcsin(2 * (q_w * q_y - q_z * q_x))
+
+    # Yaw (Z-axis rotation)
+    yaw = np.arctan2(2 * (q_w * q_z + q_x * q_y), 1 - 2 * (q_y**2 + q_z**2))
+
+    return yaw, pitch, roll

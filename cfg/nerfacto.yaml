@@ -11,30 +11,29 @@ course_samples: 64 # number course samples per ray
 fine_samples: 64 # number fine samples per ray
 photometric_loss: rgb # rgb
 sampling_strategy: random # only random is supported right now
-batch_size: 32 # number of pixels to use for measurement points
-num_particles: 600 # Number of initial particles.
+batch_size: 2000 # number of pixels to use for measurement points
+num_particles: 100 # Number of initial particles.
 
 #### dataset and weight loading ####
-dataset_type: llff # llff, custom
-# dataset_type: custom # llff, custom
-# model_name: nerf_hallway_low
-ckpt_dir: /home/sunycs/test/nerfdiff/thirdparty/locnerf/ckpts
-data_dir: /home/sunycs/test/nerfdiff/thirdparty/locnerf/data/nerf_llff_data # only needed for LLFF data
+dataset_type: nerfacto # llff, custom
+ckpt_dir: /usr/nerfacto/room15_a/config.yml
+data_dir: /usr/dataset/room15_a 
 
 #### convergence protection #####
 # randomly sample a few particle positions to protect against false convergence
 # TODO eventually want to just remove the lowest weight particles instead of random particles
 use_convergence_protection: True
 number_convergence_particles: 10 # number of particles to distribute
-convergence_noise: 0.2 # meters, uniformly sample this far from mean for each axis.
+# convergence_noise: 0.02 # meters, uniformly sample this far from mean for each axis.
+convergence_noise: 0.1 # meters, uniformly sample this far from mean for each axis.
 
 #### inerf comparision ####
-run_inerf_compare: True
+run_inerf_compare: False
 global_loc_mode: True # Perform Loc-NeRF with Loc-NeRF.
 log_results: False # Save pose estimate for each iteration. Also save a file with gt pose and the initial pose guess if use_logged_start is False.
 use_logged_start: False # use saved logs for initial pose
 log_prefix: use_annealing # add a prefix to the log file names for convenience to keep track of different runs
-log_directory: /home/sunycs/test/nerfdiff/thirdparty/locnerf/logs/global_loc # Directory to save npy files.
+log_directory: /home/sunycs/test/nerfdiff/thirdparty/locnerf/logs/room15_a # Directory to save npy files.
 forward_passes_limit: 78643200 # end optimization after this number of forward passes have run
 
 #### custom data realtime tracking mode params ####
@@ -50,24 +49,38 @@ near: 0
 far: 8
 # set distribution of particles, units are meters and degrees 
 min_bounds:
+  # px: -0.15
+  # py: -0.20
+  # pz: 0
+  # rz: -0.95
+  # ry: 1.4
+  # rx: -0.15
+
   px: -0.5
-  py: -0.3
-  pz: 0.0
-  rz: -2.5
-  ry: -179.0
-  rx: -2.5
+  py: -0.5
+  pz: -0.5
+  rz: -1.57
+  ry: -1.57
+  rx: -1.57
 max_bounds:
+  # px: -0.2
+  # py: -0.25
+  # pz: 0.1
+  # rz: -0.1
+  # ry: 1.5
+  # rx: -0.16
+
   px: 0.5
-  py: 0.2
-  pz: 3.5
-  rz: 2.5
-  ry: 179.0
-  rx: 2.5
+  py: 0.5
+  pz: 0.5
+  rz: 1.57
+  ry: 1.57
+  rx: 1.57
 # rotation from the body frame of VIO to the NeRF camera frame (x right, y up, z inward). all values in radians
 R_bodyVins_camNerf: 
   rz: 0.0
   ry: 0.0
-  rx: 3.14159256
+  rx: 0.0
 
 #### Nerf Navigation comparision ####
 # uses user set distribution of particles
@@ -85,16 +98,18 @@ alpha_super_refine: 0.03
 
 #### motion model noise params ####
 # position noise
-px_noise: 0.02
-py_noise: 0.02
-pz_noise: 0.02
+# px_noise: 0.008
+px_noise: 0.01
+py_noise: 0.01
+pz_noise: 0.01
 # rotation noise
-rot_x_noise: 0.01
-rot_y_noise: 0.04
-rot_z_noise: 0.01
+rot_x_noise: 0.001
+rot_y_noise: 0.004
+rot_z_noise: 0.001
 
 #### visualization params ####
 visualize_particles: True # publish particles for rviz
+visualize_particles_interval: 1
 view_debug_image_iteration: 0 # view NeRF rendered image at estimated pose after number of iterations (set to 0 to disable)
 
 ####### DO NOT CHANGE THESE UNLESS YOU KNOW WHAT YOU ARE DOING ########

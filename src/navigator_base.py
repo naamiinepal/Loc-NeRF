@@ -1,13 +1,26 @@
-import rospy
+# import rospy
 import numpy as np
 import warnings
 from full_filter import NeRF
-
+import yaml
+import pdb
  # Base class to handle loading params from yaml.
 
+class ReadConfig:
+    def __init__(self, path):
+        with open(path, 'r') as yaml_file:
+            self.data = yaml.safe_load(yaml_file)
+    def get_param(self, key):
+        return self.data[key]
+    
+
+
 class NavigatorBase:
-    def __init__(self, img_num=0, dataset_name=None):
+    def __init__(self, img_num, dataset_name, config_path):
         # extract params
+        # pdb.set_trace()
+
+        rospy = ReadConfig(config_path)
         self.factor = rospy.get_param('factor')
         self.focal = rospy.get_param('focal')
         self.H = rospy.get_param('H')

@@ -2,7 +2,7 @@
 
 from turtle import pos
 
-import rospy
+# import rospy
 import numpy as np
 import gtsam
 import cv2
@@ -10,16 +10,19 @@ import torch
 import time
 import glob
 import matplotlib.pyplot as plt
+import pdb
 
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseArray, Pose
+# from cv_bridge import CvBridge
+# from sensor_msgs.msg import Image
+# from nav_msgs.msg import Odometry
+# from geometry_msgs.msg import PoseArray, Pose
 
 from scipy.spatial.transform import Rotation as R
+from navigator_base import ReadConfig
 from copy import copy
 
-import locnerf
+
+# import locnerf
 from full_filter import NeRF
 from particle_filter import ParticleFilter
 from utils import get_pose
@@ -27,47 +30,30 @@ from navigator_base import NavigatorBase
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+rospy = ReadConfig('./cfg/llff_global.yaml')
 
 class Navigator(NavigatorBase):
-    def __init__(self, img_num=None, dataset_name=None):
+    def __init__(self, img_num=0, dataset_name=None, config_path='./cfg/llff_global.yaml'):
         # Base class handles loading most params.
-        NavigatorBase.__init__(self, img_num=img_num, dataset_name=dataset_name)
+        NavigatorBase.__init__(self, img_num=img_num, dataset_name=dataset_name, config_path=config_path)
 
         # Set initial distribution of particles.
         self.get_initial_distribution()
 
-        self.br = CvBridge()
+        # if self.log_results:
+        #     # If using a provided start we already have ground truth, so don't log redundant gt.
+        #     if not self.use_logged_start:
+        #         with open(self.log_directory + "/" + "gt_" + self.model_name + "_" + str(self.obs_img_num) + "_" + "poses.npy", 'wb') as f:
+        #             np.save(f, self.gt_pose)
 
-        # Set up publishers.
-        self.particle_pub = rospy.Publisher("/particles", PoseArray, queue_size = 10)
-        self.pose_pub = rospy.Publisher("/estimated_pose", Odometry, queue_size = 10)
-        self.gt_pub = rospy.Publisher("/gt_pose", PoseArray, queue_size = 10)
-
-        # Set up subscribers.
-        # We don't need callbacks to compare against inerf.
-        if not self.run_inerf_compare:
-            self.image_sub = rospy.Subscriber(self.rgb_topic,Image,self.rgb_callback, queue_size=1, buff_size=2**24)
-            if self.run_predicts:
-                self.vio_sub = rospy.Subscriber(self.pose_topic, Odometry, self.vio_callback, queue_size = 10)
-
-        # Show initial distribution of particles
-        if self.plot_particles:
-            self.visualize()
-
-        if self.log_results:
-            # If using a provided start we already have ground truth, so don't log redundant gt.
-            if not self.use_logged_start:
-                with open(self.log_directory + "/" + "gt_" + self.model_name + "_" + str(self.obs_img_num) + "_" + "poses.npy", 'wb') as f:
-                    np.save(f, self.gt_pose)
-
-            # Add initial pose estimate before first update step is run.
-            if self.use_weighted_avg:
-                position_est = self.filter.compute_weighted_position_average()
-            else:
-                position_est = self.filter.compute_simple_position_average()
-            rot_est = self.filter.compute_simple_rotation_average()
-            pose_est = gtsam.Pose3(rot_est, position_est).matrix()
-            self.all_pose_est.append(pose_est)
+        #     # Add initial pose estimate before first update step is run.
+        #     if self.use_weighted_avg:
+        #         position_est = self.filter.compute_weighted_position_average()
+        #     else:
+        #         position_est = self.filter.compute_simple_position_average()
+        #     rot_est = self.filter.compute_simple_rotation_average()
+        #     pose_est = gtsam.Pose3(rot_est, position_est).matrix()
+        #     self.all_pose_est.append(pose_est)
 
     def get_initial_distribution(self):
         # NOTE for now assuming everything stays in NeRF coordinates (x right, y up, z inward)
@@ -338,6 +324,7 @@ class Navigator(NavigatorBase):
         self.rot_x_noise = rospy.get_param('rot_x_noise') / scale
         self.rot_y_noise = rospy.get_param('rot_y_noise') / scale
         self.rot_z_noise = rospy.get_param('rot_z_noise') / scale
+        # pass
 
 
     def check_refine_gate(self):
@@ -368,68 +355,70 @@ class Navigator(NavigatorBase):
             self.num_particles = self.min_number_particles
 
     def publish_pose_est(self, pose_est_gtsam, img_timestamp = None):
-        pose_est = Odometry()
-        pose_est.header.frame_id = "world"
+        # pose_est = Odometry()
+        # pose_est.header.frame_id = "world"
 
-        # if we don't run on rosbag data then we don't have timestamps
-        if img_timestamp is not None:
-            pose_est.header.stamp = img_timestamp
+        # # if we don't run on rosbag data then we don't have timestamps
+        # if img_timestamp is not None:
+        #     pose_est.header.stamp = img_timestamp
 
-        pose_est_gtsam = gtsam.Pose3(pose_est_gtsam)
-        position_est = pose_est_gtsam.translation()
-        rot_est = pose_est_gtsam.rotation().quaternion()
+        # pose_est_gtsam = gtsam.Pose3(pose_est_gtsam)
+        # position_est = pose_est_gtsam.translation()
+        # rot_est = pose_est_gtsam.rotation().quaternion()
 
-        # populate msg with pose information
-        pose_est.pose.pose.position.x = position_est[0]
-        pose_est.pose.pose.position.y = position_est[1]
-        pose_est.pose.pose.position.z = position_est[2]
-        pose_est.pose.pose.orientation.w = rot_est[0]
-        pose_est.pose.pose.orientation.x = rot_est[1]
-        pose_est.pose.pose.orientation.y = rot_est[2]
-        pose_est.pose.pose.orientation.z = rot_est[3]
-        # print(pose_est_gtsam.rotation().ypr())
+        # # populate msg with pose information
+        # pose_est.pose.pose.position.x = position_est[0]
+        # pose_est.pose.pose.position.y = position_est[1]
+        # pose_est.pose.pose.position.z = position_est[2]
+        # pose_est.pose.pose.orientation.w = rot_est[0]
+        # pose_est.pose.pose.orientation.x = rot_est[1]
+        # pose_est.pose.pose.orientation.y = rot_est[2]
+        # pose_est.pose.pose.orientation.z = rot_est[3]
+        # # print(pose_est_gtsam.rotation().ypr())
 
-        # publish pose
-        self.pose_pub.publish(pose_est)
+        # # publish pose
+        # self.pose_pub.publish(pose_est)
+        pass
 
     def visualize(self):
-        # publish pose array of particles' poses
-        poses = []
-        R_nerf_body = gtsam.Rot3.Rx(-np.pi/2)
-        for index, particle in enumerate(self.filter.particles['position']): 
-            p = Pose()
-            p.position.x = particle[0]
-            p.position.y = particle[1]
-            p.position.z = particle[2]
-            # print(particle[3],particle[4],particle[5])
-            rot = self.filter.particles['rotation'][index]
-            orient = rot.quaternion()
-            p.orientation.w = orient[0]
-            p.orientation.x = orient[1]
-            p.orientation.y = orient[2]
-            p.orientation.z = orient[3]
-            poses.append(p)
+        # # publish pose array of particles' poses
+        # poses = []
+        # R_nerf_body = gtsam.Rot3.Rx(-np.pi/2)
+        # for index, particle in enumerate(self.filter.particles['position']): 
+        #     p = Pose()
+        #     p.position.x = particle[0]
+        #     p.position.y = particle[1]
+        #     p.position.z = particle[2]
+        #     # print(particle[3],particle[4],particle[5])
+        #     rot = self.filter.particles['rotation'][index]
+        #     orient = rot.quaternion()
+        #     p.orientation.w = orient[0]
+        #     p.orientation.x = orient[1]
+        #     p.orientation.y = orient[2]
+        #     p.orientation.z = orient[3]
+        #     poses.append(p)
             
-        pa = PoseArray()
-        pa.poses = poses
-        pa.header.frame_id = "world"
-        self.particle_pub.publish(pa)
+        # pa = PoseArray()
+        # pa.poses = poses
+        # pa.header.frame_id = "world"
+        # self.particle_pub.publish(pa)
 
-        # if we have a ground truth pose then publish it
-        if not self.use_received_image or self.gt_pose is not None:
-            gt_array = PoseArray()
-            gt = Pose()
-            gt_rot = gtsam.Rot3(self.gt_pose[0:3,0:3]).quaternion()
-            gt.orientation.w = gt_rot[0]
-            gt.orientation.x = gt_rot[1]
-            gt.orientation.y = gt_rot[2]
-            gt.orientation.z = gt_rot[3]
-            gt.position.x = self.gt_pose[0,3]
-            gt.position.y = self.gt_pose[1,3]
-            gt.position.z = self.gt_pose[2,3]
-            gt_array.poses = [gt]
-            gt_array.header.frame_id = "world"
-            self.gt_pub.publish(gt_array)
+        # # if we have a ground truth pose then publish it
+        # if not self.use_received_image or self.gt_pose is not None:
+        #     gt_array = PoseArray()
+        #     gt = Pose()
+        #     gt_rot = gtsam.Rot3(self.gt_pose[0:3,0:3]).quaternion()
+        #     gt.orientation.w = gt_rot[0]
+        #     gt.orientation.x = gt_rot[1]
+        #     gt.orientation.y = gt_rot[2]
+        #     gt.orientation.z = gt_rot[3]
+        #     gt.position.x = self.gt_pose[0,3]
+        #     gt.position.y = self.gt_pose[1,3]
+        #     gt.position.z = self.gt_pose[2,3]
+        #     gt_array.poses = [gt]
+        #     gt_array.header.frame_id = "world"
+        #     self.gt_pub.publish(gt_array)
+        pass
  
 def average_arrays(axis_list):
     """
@@ -454,15 +443,16 @@ def average_arrays(axis_list):
     plt.show()
 
 if __name__ == "__main__":
-    rospy.init_node("nav_node")
+    # rospy.init_node("nav_node")
 
-    run_inerf_compare = rospy.get_param("run_inerf_compare")
-    use_logged_start = rospy.get_param("use_logged_start")
-    log_directory = rospy.get_param("log_directory")
+    run_inerf_compare = True
+    use_logged_start = False
+    log_directory = '/home/sunycs/bishad/Loc-NeRF/test-log'
 
     if run_inerf_compare:
         num_starts_per_dataset = 5 # TODO make this a param
-        datasets = ['fern', 'horns', 'fortress', 'room'] # TODO make this a param
+        # datasets = ['fern', 'horns', 'fortress', 'room'] # TODO make this a param
+        datasets = ['fern'] # TODO make this a param
         # datasets = ['fern']
 
         total_position_error_good = []
@@ -486,7 +476,7 @@ if __name__ == "__main__":
                     start_file = start_pose_files[i]
                     img_num = int(start_file.split('_')[5])
 
-                mcl_local = Navigator(img_num, dataset_name)
+                mcl_local = Navigator(img_num, dataset_name, config_path='./cfg/llff_global.yaml')
                 print()
                 print("Using Image Number:", mcl_local.obs_img_num)
                 print("Test", i+1, "out of", num_starts_per_dataset)
@@ -518,6 +508,7 @@ if __name__ == "__main__":
 
         average_arrays([total_num_forward_passes, total_position_error_good])
         average_arrays([total_num_forward_passes, total_rotation_error_good])
+        # pdb.set_trace()
 
     # run normal live ROS mode
     else:
