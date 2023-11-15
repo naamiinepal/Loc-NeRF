@@ -45,25 +45,14 @@ def euler_to_quaternion(yaw, pitch, roll):
 
 
 class NerfactoNavigator():
-    def __init__(self, config_path='./cfg/llff_global.yaml'):
-        self.config = ReadConfig(path = config_path)
+    def __init__(self,eval_index, model_config_path, dataset_path):
+        self.config = ReadConfig(path = './cfg/nerfacto.yaml')
+        self.eval_index = 10
+        self.model_config_path = model_config_path
+        self.dataset_path = dataset_path
         self.initialize()
         self.get_initial_distribution()
 
-        # if self.log_results:
-        #     # If using a provided start we already have ground truth, so don't log redundant gt.
-        #     if not self.use_logged_start:
-        #         with open(self.log_directory + "/" + "gt_" + self.model_name + "_" + str(self.obs_img_num) + "_" + "poses.npy", 'wb') as f:
-        #             np.save(f, self.gt_pose)
-
-        #     # Add initial pose estimate before first update step is run.
-        #     if self.use_weighted_avg:
-        #         position_est = self.filter.compute_weighted_position_average()
-        #     else:
-        #         position_est = self.filter.compute_simple_position_average()
-        #     rot_est = self.filter.compute_simple_rotation_average()
-        #     pose_est = gtsam.Pose3(rot_est, position_est).matrix()
-        #     self.all_pose_est.append(pose_est)
 
     def initialize(self):
         self.num_updates = 0
@@ -76,8 +65,6 @@ class NerfactoNavigator():
         self.convergence_noise = self.config.get_param('convergence_noise')
         self.use_received_image = self.config.get_param('use_received_image')
         self.sampling_strategy = self.config.get_param('sampling_strategy')
-        self.ckpt_dir = self.config.get_param('ckpt_dir')
-        self.data_dir = self.config.get_param('data_dir')
         self.batch_size = self.config.get_param('batch_size')
         self.num_particles = self.config.get_param('num_particles')
         self.min_bounds = self.config.get_param('min_bounds')
@@ -90,30 +77,30 @@ class NerfactoNavigator():
         self.log_directory = self.config.get_param('log_directory')
         
         self.run_predicts = self.config.get_param('run_predicts')
-
-
+        self.use_mask = False
 
         self.alpha_refine = self.config.get_param('alpha_refine')
         self.alpha_super_refine = self.config.get_param('alpha_super_refine')
 
-        self.nerf_model = load_nerfacto_model(Path(self.ckpt_dir))
+        self.nerf_model = load_nerfacto_model(Path(self.model_config_path))
         self.device = self.nerf_model.device
-        self.dataset = SceneDataset(self.data_dir, device=self.device, filename='poses_test_15.txt')
+        self.dataset = SceneDataset(self.dataset_path, device=self.device, filename='poses_test_15.txt')
         self.metadata = self.dataset.metadata
-        subsample_method = 'sift'
-        subsample_n_points = 100
-        subsample_dilation = 5
-        image_sampler = ImageSubsampler(subsample_method, subsample_n_points, subsample_dilation)
-        
-        
-        eval_index = 0
-        self.target = self.dataset[eval_index]['image']
-        self.target_image = self.target.permute(1, 2, 0)
-        self.target_pose = self.dataset[eval_index]['qctc']
-        (mask,), (n_points_in_mask,) = image_sampler.get_mask(self.target[None], True)
-        self.mask = torch.tensor(mask)
 
-        self.visualize_output_directory = Path(self.log_directory) / self.timestamp
+        self.target = self.dataset[self.eval_index]['image']
+        self.target_image = self.target.permute(1, 2, 0)
+        self.target_pose = self.dataset[self.eval_index]['qctc']
+        self.mask = None
+
+        if self.use_mask:
+            subsample_method = 'sift'
+            subsample_n_points = 100
+            subsample_dilation = 5
+            image_sampler = ImageSubsampler(subsample_method, subsample_n_points, subsample_dilation)
+            (mask,), (n_points_in_mask,) = image_sampler.get_mask(self.target[None], True)
+            self.mask = torch.tensor(mask)
+
+        self.visualize_output_directory = Path(self.log_directory) / self.timestamp / f'{self.eval_index}'
         self.visualize_output_directory.mkdir(parents=True, exist_ok=True)
         pass
     def get_initial_distribution(self):
@@ -145,7 +132,11 @@ class NerfactoNavigator():
             # print(initial_particles)
         return {'position':initial_positions, 'rotation':np.array(rots)}
 
-    
+    def get_particle_qctcs(self):
+        quats = np.array([ rotmat2qvec(x.matrix()) for x in self.filter.particles['rotation']])
+        qctcs = np.concatenate((quats, self.filter.particles['position']), axis=-1)
+        return qctcs
+
     def rgb_callback(self, msg):
         self.img_msg = msg
         
@@ -166,21 +157,19 @@ class NerfactoNavigator():
                 self.filter.particles["position"][i] = self.filter.particles["position"][i] + np.array([t_x, t_y, t_z])
                 particles_position_before_update[i] = particles_position_before_update[i] + np.array([t_x, t_y, t_z])
         
-        quats = np.array([ rotmat2qvec(x.matrix()) for x in self.filter.particles['rotation']])
+        # quats = np.array([ rotmat2qvec(x.matrix()) for x in self.filter.particles['rotation']])
 
-        particles = np.concatenate((quats, self.filter.particles['position']), axis=-1)
-        self.particles_timeline.append(particles)
-        particles = torch.tensor(particles)
+        # particles = np.concatenate((quats, self.filter.particles['position']), axis=-1)
+        # particles = torch.tensor(particles)
+        particles = torch.tensor(self.get_particle_qctcs())
         losses = get_photometric_error_nerfacto(
             particles=particles,
             target_images=self.target,
             nerf=self.nerf_model,
             meta=self.metadata,
             device=self.device,
-            masks=self.mask,
+            masks=None,
             no_of_rays=self.batch_size*self.num_particles)
-        
-        # pdb.set_trace()
 
         for index, particle in enumerate(particles_position_before_update):
                 self.filter.weights[index] = 1/losses[index]
@@ -204,35 +193,7 @@ class NerfactoNavigator():
         pose_est = np.array(list(quat)+list(avg_pose))
 
         if self.plot_particles and self.num_updates % self.plot_particles_interval == 0:
-            self.visualize(particles, pose_est)
-            
-        # TODO add ability to render several frames
-        # if self.view_debug_image_iteration != 0 and (self.num_updates == self.view_debug_image_iteration):
-        #     self.nerf.visualize_nerf_image(self.nerf_pose)
-
-        # if not self.use_received_image:
-        #     if self.use_weighted_avg:
-        #         print("average position of all particles: ", self.filter.compute_weighted_position_average())
-        #         print("position error: ", np.linalg.norm(self.gt_pose[0:3,3] - self.filter.compute_weighted_position_average()))
-        #     else:
-        #         print("average position of all particles: ", self.filter.compute_simple_position_average())
-        #         print("position error: ", np.linalg.norm(self.gt_pose[0:3,3] - self.filter.compute_simple_position_average()))
-
-        # if self.use_weighted_avg:
-        #     position_est = self.filter.compute_weighted_position_average()
-        # else:
-        #     position_est = self.filter.compute_simple_position_average()
-        # rot_est = self.filter.compute_simple_rotation_average()
-        # pose_est = gtsam.Pose3(rot_est, position_est).matrix()
-
-        # if self.log_results:
-        #     self.all_pose_est.append(pose_est)
-        
-        # if not self.run_inerf_compare:
-        #     img_timestamp = msg.header.stamp
-        #     self.publish_pose_est(pose_est, img_timestamp)
-        # else:
-        #     self.publish_pose_est(pose_est)
+            self.visualize(particles)
     
         update_time = time.time() - start_time
         print("Time taken:", update_time)
@@ -314,7 +275,7 @@ class NerfactoNavigator():
     def publish_pose_est(self, pose_est_gtsam, img_timestamp = None):
         pass
 
-    def visualize(self, particles, pose_est):
+    def visualize(self, particles):
         fig = plt.figure(figsize=(24,12))
         grid = fig.add_gridspec(nrows=3, ncols=2)
 
@@ -343,7 +304,7 @@ class NerfactoNavigator():
 
 
 if __name__ == '__main__':
-    navigator = NerfactoNavigator('./cfg/nerfacto.yaml')
+    navigator = NerfactoNavigator(eval_index = 0, model_config_path='/usr/nerfacto/room15_a/config.yml', dataset_path='/usr/dataset/room15_a')
     start_time = time.time()
     for i in range(50):
         pose_estimate = navigator.rgb_run()

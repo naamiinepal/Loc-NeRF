@@ -16,8 +16,6 @@ num_particles: 100 # Number of initial particles.
 
 #### dataset and weight loading ####
 dataset_type: nerfacto # llff, custom
-ckpt_dir: /usr/nerfacto/room15_a/config.yml
-data_dir: /usr/dataset/room15_a 
 
 #### convergence protection #####
 # randomly sample a few particle positions to protect against false convergence
@@ -25,7 +23,7 @@ data_dir: /usr/dataset/room15_a
 use_convergence_protection: True
 number_convergence_particles: 10 # number of particles to distribute
 # convergence_noise: 0.02 # meters, uniformly sample this far from mean for each axis.
-convergence_noise: 0.1 # meters, uniformly sample this far from mean for each axis.
+convergence_noise: 0.05 # meters, uniformly sample this far from mean for each axis.
 
 #### inerf comparision ####
 run_inerf_compare: False
@@ -108,7 +106,7 @@ rot_y_noise: 0.004
 rot_z_noise: 0.001
 
 #### visualization params ####
-visualize_particles: True # publish particles for rviz
+visualize_particles: True # 
 visualize_particles_interval: 1
 view_debug_image_iteration: 0 # view NeRF rendered image at estimated pose after number of iterations (set to 0 to disable)
 
