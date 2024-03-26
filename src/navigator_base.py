@@ -1,7 +1,7 @@
 # import rospy
 import numpy as np
 import warnings
-from full_filter import NeRF
+# from full_filter import NeRF
 import yaml
 import pdb
  # Base class to handle loading params from yaml.

@@ -8,7 +8,6 @@ import torch
 import glob
 import matplotlib.pyplot as plt
 from nerfdiff.dataset.scene_dataset import SceneDataset
-from nerfdiff.utils.nerf_utils import load_nerfacto_model
 from nerfdiff.utils.nerf_utils import get_photometric_error_nerfacto
 from pathlib import Path
 from nerfdiff.nerf.inerf import ImageSubsampler
@@ -43,13 +42,72 @@ def euler_to_quaternion(yaw, pitch, roll):
 
     return np.array([w, x, y, z])
 
+def quaternion_to_euler(quaternion):
+    """
+    Convert quaternion to yaw, pitch, roll angles.
+    Args:
+        quaternion (np.array): Quaternion [w, x, y, z].
+    Returns:
+        Tuple[float]: Yaw, pitch, roll angles in radians.
+    """
+    w, x, y, z = quaternion
+
+    t0 = 2.0 * (w * x + y * z)
+    t1 = 1.0 - 2.0 * (x**2 + y**2)
+    roll_x = np.arctan2(t0, t1)
+
+    t2 = 2.0 * (w * y - z * x)
+    t2 = np.clip(t2, -1.0, 1.0)
+    pitch_y = np.arcsin(t2)
+
+    t3 = 2.0 * (w * z + x * y)
+    t4 = 1.0 - 2.0 * (y**2 + z**2)
+    yaw_z = np.arctan2(t3, t4)
+
+    return np.array([yaw_z, pitch_y, roll_x])
+
+
+
 
 class NerfactoNavigator():
-    def __init__(self,eval_index, model_config_path, dataset_path):
-        self.config = ReadConfig(path = './cfg/nerfacto.yaml')
-        self.eval_index = 10
-        self.model_config_path = model_config_path
-        self.dataset_path = dataset_path
+    def __init__(
+            self,
+            eval_index,
+            nerf_model,
+            dataset,
+            num_particles,
+            noise_scale=1,
+            sample_around_gt=False,
+            gt_qctc= None,
+            initial_qctcs = None,
+            num_pixels_per_particle = 200,
+            use_convergence_protection = True,
+            convergence_noise = 0.05,
+            use_refining = True,
+            noise=[0.01, 0.01, 0.01, 0.001, 0.004, 0.001],
+            use_mask=False,
+            debug = False
+        ):
+        self.config = ReadConfig(path = './thirdparty/locnerf/cfg/nerfacto.yaml')
+        self.dataset = dataset
+        self.eval_index = eval_index
+        self.nerf_model = nerf_model
+        self.num_particles = num_particles
+        self.noise_scale = noise_scale
+        self.sample_around_gt = sample_around_gt
+        if gt_qctc:
+            self.ground_truth = np.array(list(gt_qctc[-3:]) + list(quaternion_to_euler(gt_qctc[:4])))
+        # pdb.set_trace()
+        self.initial_qctcs = initial_qctcs
+        self.batch_size = num_pixels_per_particle
+        self.use_convergence_protection = use_convergence_protection
+        self.convergence_noise = convergence_noise
+        self.use_refining = use_refining
+        self.noise=noise
+        self.use_mask = use_mask
+        self.debug = debug
+        self.device = nerf_model.device
+
         self.initialize()
         self.get_initial_distribution()
 
@@ -57,37 +115,29 @@ class NerfactoNavigator():
     def initialize(self):
         self.num_updates = 0
         self.timestamp = get_timestamp()
-        self.particles_timeline = []
 
-        self.use_convergence_protection = self.config.get_param('use_convergence_protection')
         self.use_weighted_avg = self.config.get_param('use_weighted_avg')
         self.number_convergence_particles = self.config.get_param('number_convergence_particles')
-        self.convergence_noise = self.config.get_param('convergence_noise')
         self.use_received_image = self.config.get_param('use_received_image')
         self.sampling_strategy = self.config.get_param('sampling_strategy')
-        self.batch_size = self.config.get_param('batch_size')
-        self.num_particles = self.config.get_param('num_particles')
+        # self.num_particles = self.config.get_param('num_particles')
         self.min_bounds = self.config.get_param('min_bounds')
         self.max_bounds = self.config.get_param('max_bounds')
         self.min_number_particles = self.config.get_param('min_number_particles')
         self.use_particle_reduction = self.config.get_param('use_particle_reduction')
-        self.use_refining = self.config.get_param('use_refining')
         self.plot_particles  = self.config.get_param('visualize_particles')
         self.plot_particles_interval  = self.config.get_param('visualize_particles_interval')
         self.log_directory = self.config.get_param('log_directory')
         
         self.run_predicts = self.config.get_param('run_predicts')
-        self.use_mask = False
 
         self.alpha_refine = self.config.get_param('alpha_refine')
         self.alpha_super_refine = self.config.get_param('alpha_super_refine')
 
-        self.nerf_model = load_nerfacto_model(Path(self.model_config_path))
         self.device = self.nerf_model.device
-        self.dataset = SceneDataset(self.dataset_path, device=self.device, filename='poses_test_15.txt')
         self.metadata = self.dataset.metadata
 
-        self.target = self.dataset[self.eval_index]['image']
+        self.target = self.dataset[self.eval_index]['image'].to(self.device)
         self.target_image = self.target.permute(1, 2, 0)
         self.target_pose = self.dataset[self.eval_index]['qctc']
         self.mask = None
@@ -107,29 +157,63 @@ class NerfactoNavigator():
         self.initial_particles = self.get_initial_particles()
         self.filter = ParticleFilter(self.initial_particles)
 
-    def get_initial_particles(self):
-        initial_particles_noise = np.random.uniform(
-            np.array([self.min_bounds['px'], self.min_bounds['py'], self.min_bounds['pz'], self.min_bounds['rz'], self.min_bounds['ry'], self.min_bounds['rx']]),
-            np.array([self.max_bounds['px'], self.max_bounds['py'], self.max_bounds['pz'], self.max_bounds['rz'], self.max_bounds['ry'], self.max_bounds['rx']]),
-            size = (self.num_particles, 6))
+    def save_distribution_plot(self, fig_save_path, title=''):
+        fig = plt.figure(figsize=(6,6))
+        grid = fig.add_gridspec(nrows=1, ncols=1)
+        ax = fig.add_subplot(grid[:2,0], projection='3d')
+        ax.view_init(elev=-70, azim=90, roll=0)
+        ax.set_xlim(-1,1)
+        ax.set_ylim(-1,1)
+        ax.set_zlim(-1,1)
+        ax.set_title(title)
 
-        initial_positions = np.zeros((self.num_particles, 3))
-        rots = []
-        for index, particle in enumerate(initial_particles_noise):
-            x = particle[0]
-            y = particle[1]
-            z = particle[2]
-            phi = particle[3]
-            theta = particle[4]
-            psi = particle[5]
-            
-            
-            # set positions
-            initial_positions[index,:] = initial_particles_noise[index, :3]
-            # set orientations
-            rots.append(gtsam.Rot3.Ypr(phi, theta, psi))
-            # pdb.set_trace()
-            # print(initial_particles)
+        final_particles = utils.normalize_qt(self.get_particle_qctcs()) # Normalize q
+        cam_orn = (-1,1,-1)
+        ground_truth = self.target_pose.clone().detach().cpu().numpy()
+
+        # Plot Camera Poses on this time step
+        plot_cam_poses(final_particles, ax, cam_orientation=cam_orn, scale=0.02, alpha=0.3)
+        plot_cam_poses(ground_truth[None], ax, cam_orientation=cam_orn, scale=0.02, alpha=1, color='green')
+        
+        plt.savefig(fig_save_path)
+        plt.close()
+
+    def get_initial_particles(self):
+        if self.initial_qctcs is not None:
+            initial_positions = self.initial_qctcs[:, -3:]
+            rots = []
+            # qctcs = self.initial_qctcs.clone().detach().cpu().numpy()
+            for qctc in self.initial_qctcs:
+                [yaw, pitch, roll] = quaternion_to_euler(qctc[:4])
+                rots.append(gtsam.Rot3.Ypr(yaw, pitch, roll))
+
+        else:
+            initial_particles_noise = np.random.uniform(
+                np.array([self.min_bounds['px'], self.min_bounds['py'], self.min_bounds['pz'], self.min_bounds['rz'], self.min_bounds['ry'], self.min_bounds['rx']]),
+                np.array([self.max_bounds['px'], self.max_bounds['py'], self.max_bounds['pz'], self.max_bounds['rz'], self.max_bounds['ry'], self.max_bounds['rx']]),
+                size = (self.num_particles, 6)) * self.noise_scale
+            if self.sample_around_gt:
+                initial_particles_noise += self.ground_truth
+                # samples = np.random.normal(0, self.particle_sampling_sigma, self.num_particles*6)
+                # initial_particles_noise = samples.reshape(-1, 6) 
+                # # Scale the noise so that translation noise is in range -1 to 1 and rotation noise in -pi - pi
+                # initial_particles_noise[:3]*=3.141492654
+                # initial_particles_noise+= self.ground_truth
+            initial_positions = np.zeros((self.num_particles, 3))
+            rots = []
+            for index, particle in enumerate(initial_particles_noise):
+                x = particle[0]
+                y = particle[1]
+                z = particle[2]
+                phi = particle[3]
+                theta = particle[4]
+                psi = particle[5]
+                
+                # set positions
+                initial_positions[index,:] = initial_particles_noise[index, :3]
+                # set orientations
+                rots.append(gtsam.Rot3.Ypr(phi, theta, psi))
+        
         return {'position':initial_positions, 'rotation':np.array(rots)}
 
     def get_particle_qctcs(self):
@@ -139,11 +223,26 @@ class NerfactoNavigator():
 
     def rgb_callback(self, msg):
         self.img_msg = msg
+
+    def get_photometric_error(self):
+        particles = torch.tensor(self.get_particle_qctcs(), device=self.device)
+        # pdb.set_trace()
+
+        losses = get_photometric_error_nerfacto(
+            particles=particles,
+            target_images=self.target,
+            nerf=self.nerf_model,
+            meta=self.metadata,
+            device=self.device,
+            masks=self.mask,
+            no_of_rays=self.batch_size*self.num_particles)
+        return losses
         
     def rgb_run(self):
         start_time = time.time()
 
         # make copies to prevent mutations
+        # pdb.set_trace()
         particles_position_before_update = np.copy(self.filter.particles['position'])
         particles_rotation_before_update = np.copy(self.filter.particles['rotation'])
 
@@ -156,28 +255,15 @@ class NerfactoNavigator():
                 # particles to check the loss and the actual locations of the particles
                 self.filter.particles["position"][i] = self.filter.particles["position"][i] + np.array([t_x, t_y, t_z])
                 particles_position_before_update[i] = particles_position_before_update[i] + np.array([t_x, t_y, t_z])
-        
-        # quats = np.array([ rotmat2qvec(x.matrix()) for x in self.filter.particles['rotation']])
 
-        # particles = np.concatenate((quats, self.filter.particles['position']), axis=-1)
-        # particles = torch.tensor(particles)
-        particles = torch.tensor(self.get_particle_qctcs())
-        losses = get_photometric_error_nerfacto(
-            particles=particles,
-            target_images=self.target,
-            nerf=self.nerf_model,
-            meta=self.metadata,
-            device=self.device,
-            masks=None,
-            no_of_rays=self.batch_size*self.num_particles)
+        
+        losses = self.get_photometric_error()
 
         for index, particle in enumerate(particles_position_before_update):
                 self.filter.weights[index] = 1/losses[index]
 
         self.filter.update()
         self.num_updates += 1
-        print("UPDATE STEP NUMBER", self.num_updates, "RAN")
-        print("number particles:", self.num_particles)
 
         if self.use_refining: # TODO make it where you can reduce number of particles without using refining
             self.check_refine_gate()
@@ -191,57 +277,24 @@ class NerfactoNavigator():
         avg_rot_ypr = avg_rot.ypr()
         quat = euler_to_quaternion(avg_rot_ypr[0], avg_rot_ypr[1], avg_rot_ypr[2])
         pose_est = np.array(list(quat)+list(avg_pose))
-
-        if self.plot_particles and self.num_updates % self.plot_particles_interval == 0:
-            self.visualize(particles)
     
         update_time = time.time() - start_time
-        print("Time taken:", update_time)
+        if self.debug:
+            print("Time taken:", update_time)
 
         if not self.run_predicts:
-            self.filter.predict_no_motion(self.px_noise, self.py_noise, self.pz_noise, self.rot_x_noise, self.rot_y_noise, self.rot_z_noise) #  used if you want to localize a static image
+            self.filter.predict_no_motion(*self.noise) #  used if you want to localize a static image
         
         # return is just for logging
-        return pose_est
-    
-    def check_if_position_error_good(self, return_error = False):
-        """
-        check if position error is less than 5cm, or return the error if return_error is True
-        """
-        acceptable_error = 0.05
-        if self.use_weighted_avg:
-            error = np.linalg.norm(self.gt_pose[0:3,3] - self.filter.compute_weighted_position_average())
-            if return_error:
-                return error
-            return error < acceptable_error
-        else:
-            error = np.linalg.norm(self.gt_pose[0:3,3] - self.filter.compute_simple_position_average())
-            if return_error:
-                return error
-            return error < acceptable_error
-
-    def check_if_rotation_error_good(self, return_error = False):
-        """
-        check if rotation error is less than 5 degrees, or return the error if return_error is True
-        """
-        acceptable_error = 5.0
-        average_rot_t = (self.filter.compute_simple_rotation_average()).transpose()
-        # check rot in bounds by getting angle using https://math.stackexchange.com/questions/2113634/comparing-two-rotation-matrices
-
-        r_ab = average_rot_t @ (self.gt_pose[0:3,0:3])
-        rot_error = np.rad2deg(np.arccos((np.trace(r_ab) - 1) / 2))
-        print("rotation error: ", rot_error)
-        if return_error:
-            return rot_error
-        return abs(rot_error) < acceptable_error
+        return pose_est, losses
     
     def set_noise(self, scale):
-        self.px_noise = self.config.get_param('px_noise') / scale
-        self.py_noise = self.config.get_param('py_noise') / scale
-        self.pz_noise = self.config.get_param('pz_noise') / scale
-        self.rot_x_noise = self.config.get_param('rot_x_noise') / scale
-        self.rot_y_noise = self.config.get_param('rot_y_noise') / scale
-        self.rot_z_noise = self.config.get_param('rot_z_noise') / scale
+        self.px_noise = self.noise[0] / scale
+        self.py_noise = self.noise[1] / scale
+        self.pz_noise = self.noise[2] / scale
+        self.rot_x_noise = self.noise[3] / scale
+        self.rot_y_noise = self.noise[4] / scale
+        self.rot_z_noise = self.noise[5] / scale
         # pass
 
 
@@ -251,16 +304,19 @@ class NerfactoNavigator():
         sd_xyz = np.std(self.filter.particles['position'], axis=0)
         norm_std = np.linalg.norm(sd_xyz)
         refining_used = False
-        print("sd_xyz:", sd_xyz)
-        print("norm sd_xyz:", np.linalg.norm(sd_xyz))
+        if self.debug:
+            print("sd_xyz:", sd_xyz)
+            print("norm sd_xyz:", np.linalg.norm(sd_xyz))
 
         if norm_std < self.alpha_super_refine:
-            print("SUPER REFINE MODE ON")
+            if self.debug:
+                print("SUPER REFINE MODE ON")
             # reduce original noise by a factor of 4
             self.set_noise(scale = 4.0)
             refining_used = True
         elif norm_std < self.alpha_refine:
-            print("REFINE MODE ON")
+            if self.debug:
+                print("REFINE MODE ON")
             # reduce original noise by a factor of 2
             self.set_noise(scale = 2.0)
             refining_used = True
@@ -273,32 +329,6 @@ class NerfactoNavigator():
             self.num_particles = self.min_number_particles
 
     def publish_pose_est(self, pose_est_gtsam, img_timestamp = None):
-        pass
-
-    def visualize(self, particles):
-        fig = plt.figure(figsize=(24,12))
-        grid = fig.add_gridspec(nrows=3, ncols=2)
-
-        #! Plot Final Particles
-        final_particles = particles.clone().detach().cpu().numpy()
-        gt = self.target_pose.clone().detach().cpu().numpy()
-
-        ax = fig.add_subplot(grid[:2,0], projection='3d')
-        ax.view_init(elev=-70, azim=90, roll=0)
-        ax.set_xlim(-1,1)
-        ax.set_ylim(-1,1)
-        ax.set_zlim(-1,1)
-
-        final_particles = utils.normalize_qt(final_particles) # Normalize q
-        cam_orn = (-1,1,-1)
-
-        # Plot Camera Poses on this time step
-        plot_cam_poses(final_particles, ax, cam_orientation=cam_orn, scale=0.02, alpha=0.3)
-        plot_cam_poses(gt[None], ax, cam_orientation=cam_orn, scale=0.02, alpha=1, color='green')
-        
-        fig_save_path = self.visualize_output_directory / f'{self.num_updates}.png'
-        plt.savefig(fig_save_path)
-        plt.close()
         pass
 
 

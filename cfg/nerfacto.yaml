@@ -11,8 +11,7 @@ course_samples: 64 # number course samples per ray
 fine_samples: 64 # number fine samples per ray
 photometric_loss: rgb # rgb
 sampling_strategy: random # only random is supported right now
-batch_size: 2000 # number of pixels to use for measurement points
-num_particles: 100 # Number of initial particles.
+batch_size: 200 # number of pixels to use for measurement points
 
 #### dataset and weight loading ####
 dataset_type: nerfacto # llff, custom
@@ -21,9 +20,9 @@ dataset_type: nerfacto # llff, custom
 # randomly sample a few particle positions to protect against false convergence
 # TODO eventually want to just remove the lowest weight particles instead of random particles
 use_convergence_protection: True
-number_convergence_particles: 10 # number of particles to distribute
+number_convergence_particles: 3 # number of particles to distribute
 # convergence_noise: 0.02 # meters, uniformly sample this far from mean for each axis.
-convergence_noise: 0.05 # meters, uniformly sample this far from mean for each axis.
+convergence_noise: 0.1 # meters, uniformly sample this far from mean for each axis.
 
 #### inerf comparision ####
 run_inerf_compare: False
@@ -87,8 +86,8 @@ nerf_nav_directory : /home/dominic/Downloads/input_data1
 
 #### particle annealing params ####
 use_refining: True # Decrease position noise as we start to converge.
-use_particle_reduction: True # Reduce number of particles as they start to converge
-min_number_particles: 100 # reduce particles to this amount during particle reduction
+use_particle_reduction: False # Reduce number of particles as they start to converge
+min_number_particles: 20 # reduce particles to this amount during particle reduction
 
 # position standard deviation thresholds to activate particle annealing
 alpha_refine: 0.08
@@ -106,7 +105,7 @@ rot_y_noise: 0.004
 rot_z_noise: 0.001
 
 #### visualization params ####
-visualize_particles: True # 
+visualize_particles: False # 
 visualize_particles_interval: 1
 view_debug_image_iteration: 0 # view NeRF rendered image at estimated pose after number of iterations (set to 0 to disable)
 
